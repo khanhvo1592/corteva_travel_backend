@@ -62,3 +62,36 @@ Lưu ý:
 - Nếu có nhiều dữ liệu, bạn có thể cân nhắc sử dụng bulk update để tối ưu hiệu suất.
 
 Cách này cho phép bạn cập nhật dữ liệu một cách an toàn mà không ảnh hưởng đến cấu trúc hiện tại của cơ sở dữ liệu hoặc dữ liệu trong các bảng khác.
+
+Mermaid 
+```mermaid
+
+graph TD
+    subgraph On
+        TTS1_6["TTS1 (192.168.110.6)"]
+        haohao["haohao (192.168.110.11)"]
+        PHATTHANH["PHATTHANH-KIMCHI (192.168.110.12)"]
+        debian["debian (192.168.110.100)"]
+        TTS1_101["TTS1 (192.168.110.101)"]
+        TTS2["TTS2 (192.168.110.102)"]
+        AK["AK (192.168.110.125)"]
+        MYHAO_189["MYHAO (192.168.110.189)"]
+        IP192["192.168.110.192"]
+        IP200["192.168.110.200"]
+        IP203["192.168.110.203"]
+        IP210["192.168.110.210"]
+        HP5406zl["5406zl (192.168.110.254)"]
+    end
+
+    subgraph Dead
+        DESKTOP1["DESKTOP-5PQ8H8V (192.168.110.4)"]
+        PK_TRUC["PK_TRUC (192.168.110.9)"]
+        DUNG_TTS["DUNG-TTS (192.168.110.13)"]
+        DESKTOP2["DESKTOP-9OMCVNR (192.168.110.15)"]
+        TTS_LIVE2["TTS-LIVE2 (192.168.110.16)"]
+        HUONG_TTS["HUONG-TTS (192.168.110.33)"]
+        BIENTAP2["BIENTAP-USER2 (192.168.110.59)"]
+        MYHAO_121["MYHAO (192.168.110.121)"]
+        IP245["192.168.110.245"]
+    end
+```
