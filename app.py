@@ -6,14 +6,23 @@ import random
 from openpyxl import load_workbook
 from werkzeug.utils import secure_filename
 import os
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, and_
 from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 import re
 from datetime import datetime
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})  # Cho phép tất cả các origin cho các route /api/
+# Cấu hình CORS chi tiết hơn
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",  # Cho phép tất cả các origin trong development
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True
+    }
+})
+
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB limit
@@ -41,46 +50,88 @@ def get_awards():
 
 @app.route('/api/quay-so', methods=['POST'])
 def quay_so():
-    data = request.json
-    award_id = data.get('awardId')
-    
+    data = request.get_json()
+    # Kiểm tra cả award_id và awardId
+    award_id = data.get('award_id') or data.get('awardId')
+    check_only = data.get('check_only', False)
+
     if not award_id:
-        return jsonify({'error': 'Thiếu awardId'}), 400
-    
-    award = db.session.get(Award, award_id)
-    if not award:
-        return jsonify({'error': 'Giải thưởng không tồn tại'}), 404
+        return jsonify({'error': 'Thiếu thông tin giải thưởng'}), 400
 
-    # Lấy danh sách người tham gia chưa trúng bất kỳ giải nào
-    existing_winners = select(Result.participant_id)
-    eligible_participants = Participant.query.filter(Participant.id.notin_(existing_winners)).all()
+    try:
+        # Lấy một người chơi ngẫu nhiên chưa trúng giải
+        potential_winner = db.session.query(Participant)\
+            .outerjoin(Result, Participant.id == Result.participant_id)\
+            .filter(Result.id == None)\
+            .order_by(func.random())\
+            .first()
 
-    app.logger.info(f"Giải thưởng: {award.ten_giai}")
-    app.logger.info(f"Tổng số người tham gia: {Participant.query.count()}")
-    app.logger.info(f"Số người đã trúng giải: {Result.query.count()}")
-    app.logger.info(f"Số người tham gia hợp lệ: {len(eligible_participants)}")
-    
-    if not eligible_participants:
-        return jsonify({'error': 'Không còn người tham gia hợp lệ cho giải này'}), 400
+        if not potential_winner:
+            return jsonify({'error': 'Không còn người chơi nào để quay số'}), 400
 
-    winner = random.choice(eligible_participants)
-    
-    result = Result(participant_id=winner.id, award_id=award.id)
-    db.session.add(result)
-    db.session.commit()
+        # Kiểm tra xem người chơi đã trúng giải nào chưa
+        existing_win = db.session.query(Result)\
+            .join(Participant)\
+            .filter(
+                or_(
+                    Participant.id == potential_winner.id,
+                    and_(
+                        Participant.ho_ten == potential_winner.ho_ten,
+                        Participant.dia_chi == potential_winner.dia_chi
+                    )
+                )
+            ).first()
 
-    return jsonify({
-        'participant': {
-            'id': winner.id,
-            'ho_ten': winner.ho_ten,
-            'dia_chi': winner.dia_chi
-        },
-        'award': {
-            'id': award.id,
-            'ten_giai': award.ten_giai,
-            'gia_tri': award.gia_tri
-        }
-    })
+        if existing_win:
+            # Nếu đã trúng, trả về thông tin người chơi và giải đã trúng
+            award = db.session.query(Award).filter_by(id=existing_win.award_id).first()
+            return jsonify({
+                'error': f'Đại lý đã trúng {award.ten_giai}',
+                'participant': {
+                    'id': potential_winner.id,
+                    'ho_ten': potential_winner.ho_ten,
+                    'dia_chi': potential_winner.dia_chi
+                },
+                'existing_award': {
+                    'id': award.id,
+                    'ten_giai': award.ten_giai
+                }
+            }), 409  # Conflict status code
+
+        # Nếu chỉ kiểm tra (check_only=True), trả về thông tin người chơi mà không lưu vào DB
+        if check_only:
+            return jsonify({
+                'participant': {
+                    'id': potential_winner.id,
+                    'ho_ten': potential_winner.ho_ten,
+                    'dia_chi': potential_winner.dia_chi
+                }
+            })
+
+        # Nếu không phải check_only, tạo kết quả mới và lưu vào DB
+        new_result = Result(
+            participant_id=potential_winner.id,
+            award_id=award_id,
+            thoi_gian=datetime.utcnow()
+        )
+        db.session.add(new_result)
+        db.session.commit()
+
+        return jsonify({
+            'participant': {
+                'id': potential_winner.id,
+                'ho_ten': potential_winner.ho_ten,
+                'dia_chi': potential_winner.dia_chi
+            },
+            'award': {
+                'id': award_id,
+                'ten_giai': db.session.query(Award).filter_by(id=award_id).first().ten_giai
+            }
+        })
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/results', methods=['GET'])
 def get_results():
@@ -335,6 +386,137 @@ def get_results_live_view():
         'pages': paginated_results.pages,
         'current_page': paginated_results.page
     })
+
+@app.route('/api/quay-so/check', methods=['POST'])
+def check_winner():
+    data = request.get_json()
+    award_id = data.get('award_id') or data.get('awardId')
+
+    if not award_id:
+        return jsonify({'error': 'Thiếu thông tin giải thưởng'}), 400
+
+    try:
+        # Lấy một người chơi ngẫu nhiên chưa trúng giải
+        potential_winner = db.session.query(Participant)\
+            .outerjoin(Result, Participant.id == Result.participant_id)\
+            .filter(Result.id == None)\
+            .order_by(func.random())\
+            .first()
+
+        if not potential_winner:
+            return jsonify({'error': 'Không còn người chơi nào để quay số'}), 400
+
+        # Kiểm tra xem người chơi đã trúng giải nào chưa
+        existing_win = db.session.query(Result)\
+            .join(Participant)\
+            .filter(
+                or_(
+                    Participant.id == potential_winner.id,
+                    and_(
+                        Participant.ho_ten == potential_winner.ho_ten,
+                        Participant.dia_chi == potential_winner.dia_chi
+                    )
+                )
+            ).first()
+
+        if existing_win:
+            # Nếu đã trúng, trả về thông tin người chơi và giải đã trúng
+            award = db.session.query(Award).filter_by(id=existing_win.award_id).first()
+            return jsonify({
+                'error': f'Đại lý đã trúng {award.ten_giai}',
+                'participant': {
+                    'id': potential_winner.id,
+                    'ho_ten': potential_winner.ho_ten,
+                    'dia_chi': potential_winner.dia_chi
+                },
+                'existing_award': {
+                    'id': award.id,
+                    'ten_giai': award.ten_giai
+                }
+            }), 409  # Conflict status code
+
+        return jsonify({
+            'participant': {
+                'id': potential_winner.id,
+                'ho_ten': potential_winner.ho_ten,
+                'dia_chi': potential_winner.dia_chi
+            }
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/quay-so/confirm', methods=['POST'])
+def confirm_winner():
+    data = request.get_json()
+    award_id = data.get('award_id') or data.get('awardId')
+    participant_id = data.get('participant_id')
+
+    if not award_id or not participant_id:
+        return jsonify({'error': 'Thiếu thông tin giải thưởng hoặc người tham gia'}), 400
+
+    try:
+        # Kiểm tra lại lần nữa trước khi lưu
+        existing_win = db.session.query(Result)\
+            .join(Participant)\
+            .filter(
+                or_(
+                    Participant.id == participant_id,
+                    and_(
+                        Participant.ho_ten == Participant.query.get(participant_id).ho_ten,
+                        Participant.dia_chi == Participant.query.get(participant_id).dia_chi
+                    )
+                )
+            ).first()
+
+        if existing_win:
+            award = db.session.query(Award).filter_by(id=existing_win.award_id).first()
+            return jsonify({
+                'error': f'Đại lý đã trúng {award.ten_giai}',
+                'participant': {
+                    'id': participant_id,
+                    'ho_ten': Participant.query.get(participant_id).ho_ten,
+                    'dia_chi': Participant.query.get(participant_id).dia_chi
+                },
+                'existing_award': {
+                    'id': award.id,
+                    'ten_giai': award.ten_giai
+                }
+            }), 409
+
+        # Tạo kết quả mới và lưu vào DB
+        new_result = Result(
+            participant_id=participant_id,
+            award_id=award_id,
+            thoi_gian=datetime.utcnow()
+        )
+        db.session.add(new_result)
+        db.session.commit()
+
+        return jsonify({
+            'participant': {
+                'id': participant_id,
+                'ho_ten': Participant.query.get(participant_id).ho_ten,
+                'dia_chi': Participant.query.get(participant_id).dia_chi
+            },
+            'award': {
+                'id': award_id,
+                'ten_giai': db.session.query(Award).filter_by(id=award_id).first().ten_giai
+            }
+        })
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+# Thêm middleware để xử lý CORS
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
