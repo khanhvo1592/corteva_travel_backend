@@ -14,6 +14,7 @@ class Participant(db.Model):
     id = db.Column(db.String(20), primary_key=True)
     ho_ten = db.Column(db.String(100), nullable=False)
     dia_chi = db.Column(db.String(200))
+    ma_vung = db.Column(db.String(50))
 
 class Result(db.Model):
     id = db.Column(db.Integer, primary_key=True)

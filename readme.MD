@@ -84,3 +84,39 @@ python -m flask db upgrade
 
 ## Liên hệ
 Nếu bạn có bất kỳ câu hỏi nào, vui lòng liên hệ với tôi qua email: [your_email@example.com].
+
+
+
+# update ma_vung
+I see the issue - there's a conflict with the database migrations. The error shows that the table `award` already exists when the migration is trying to create it. This suggests that the database tables were created but the migration history is not in sync.
+
+Let's fix this by following these steps:
+
+1. First, let's remove the existing database file:
+```bash
+rm instance/database.db
+```
+
+2. Then, remove the migrations folder to start fresh:
+```bash
+rm -rf migrations/
+```
+
+3. Now, let's reinitialize the migrations:
+```bash
+flask db init
+```
+
+4. Create a new migration that includes all our tables including the new `ma_vung` column:
+```bash
+flask db migrate -m "initial migration"
+```
+
+5. Finally, apply the migration:
+```bash
+flask db upgrade
+```
+
+This should resolve the migration conflict and properly set up your database with all the tables, including the new `ma_vung` column in the `participant` table.
+
+Would you like me to help you with any of these steps or do you need clarification on anything?

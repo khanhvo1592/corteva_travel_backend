@@ -93,7 +93,8 @@ def get_results():
         query = query.filter(or_(
             Participant.ho_ten.ilike(f'%{search_term}%'),
             Participant.dia_chi.ilike(f'%{search_term}%'),
-            Participant.id.ilike(f'%{search_term}%')
+            Participant.id.ilike(f'%{search_term}%'),
+            Participant.ma_vung.ilike(f'%{search_term}%')
         ))
 
     if filter_award:
@@ -107,7 +108,8 @@ def get_results():
             'participant': {
                 'id': result.participant.id,
                 'ho_ten': result.participant.ho_ten,
-                'dia_chi': result.participant.dia_chi
+                'dia_chi': result.participant.dia_chi,
+                'ma_vung': result.participant.ma_vung
             },
             'award': {
                 'id': result.award.id,
@@ -122,97 +124,89 @@ def get_results():
 @app.route('/api/participants/upload', methods=['POST'])
 def upload_participants():
     app.logger.info("upload_participants function called")
+    if 'file' not in request.files:
+        return jsonify({'error': 'Không có file được tải lên'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'Không có file được chọn'}), 400
+    
+    if not file.filename.endswith('.xlsx'):
+        return jsonify({'error': 'Chỉ chấp nhận file Excel (.xlsx)'}), 400
+    
     try:
-        if 'file' not in request.files:
-            return jsonify({'error': 'Không có file được gửi'}), 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'Không có file được chọn'}), 400
-        
-        if not file.filename.endswith('.xlsx'):
-            return jsonify({'error': 'File không hợp lệ. Vui lòng upload file Excel (.xlsx)'}), 400
-        
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
         
-        try:
-            # Use a context manager to ensure the file is closed after processing
-            with open(filepath, 'rb') as f:
-                # Use the read-only mode and data_only=True to read cell values
-                wb = load_workbook(filename=f, read_only=True, data_only=True)
-                sheet = wb.active
+        with open(filepath, 'rb') as f:
+            # Use the read-only mode and data_only=True to read cell values
+            wb = load_workbook(filename=f, read_only=True, data_only=True)
+            sheet = wb.active
 
-                # Initialize counters
-                total_processed = 0
-                added_count = 0
-                updated_count = 0
+            # Initialize counters
+            total_processed = 0
+            added_count = 0
+            updated_count = 0
 
-                # Process the file in batches
-                batch_size = 1000
-                batch = []
+            # Process the file in batches
+            batch_size = 1000
+            batch = []
 
-                for row in sheet.iter_rows(min_row=2, values_only=True):
-                    if len(row) < 3:
-                        continue  # Skip rows with insufficient data
-                    
-                    id, ho_ten, dia_chi = row[:3]
-                    
-                    # Clean and validate data
-                    id = str(id).strip() if id else None
-                    ho_ten = ILLEGAL_CHARACTERS_RE.sub('', str(ho_ten).strip()) if ho_ten else None
-                    dia_chi = ILLEGAL_CHARACTERS_RE.sub('', str(dia_chi).strip()) if dia_chi else None
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                if len(row) < 3:
+                    continue  # Skip rows with insufficient data
+                
+                id, ho_ten, dia_chi, ma_vung = row[:4] if len(row) > 3 else (*row[:3], None)
+                
+                # Clean and validate data
+                id = str(id).strip() if id else None
+                ho_ten = ILLEGAL_CHARACTERS_RE.sub('', str(ho_ten).strip()) if ho_ten else None
+                dia_chi = ILLEGAL_CHARACTERS_RE.sub('', str(dia_chi).strip()) if dia_chi else None
+                ma_vung = ILLEGAL_CHARACTERS_RE.sub('', str(ma_vung).strip()) if ma_vung else None
 
-                    if not id or not ho_ten:
-                        continue  # Skip rows with missing essential data
+                if not id or not ho_ten:
+                    continue  # Skip rows with missing essential data
 
-                    batch.append((id, ho_ten, dia_chi))
-                    
-                    if len(batch) >= batch_size:
-                        process_batch(batch)
-                        total_processed += len(batch)
-                        batch = []
-
-                    if total_processed % 10000 == 0:
-                        app.logger.info(f"Processed {total_processed} records")
-
-                # Process any remaining records
-                if batch:
+                batch.append((id, ho_ten, dia_chi, ma_vung))
+                
+                if len(batch) >= batch_size:
                     process_batch(batch)
                     total_processed += len(batch)
+                    batch = []
 
-                db.session.commit()
-                app.logger.info(f"Hoàn thành import dữ liệu. Tổng số xử lý: {total_processed}")
-            
-            os.remove(filepath)
-            return jsonify({'message': f'Upload và xử lý file thành công. Đã xử lý {total_processed} bản ghi.'}), 200
+                if total_processed % 10000 == 0:
+                    app.logger.info(f"Processed {total_processed} records")
+
+            # Process any remaining records
+            if batch:
+                process_batch(batch)
+                total_processed += len(batch)
+
+            db.session.commit()
+            app.logger.info(f"Hoàn thành import dữ liệu. Tổng số xử lý: {total_processed}")
         
-        except InvalidFileException:
-            os.remove(filepath)
-            return jsonify({'error': 'File Excel không hợp lệ hoặc bị hỏng'}), 400
-        except Exception as e:
-            db.session.rollback()
-            os.remove(filepath)
-            app.logger.error(f"Lỗi khi xử lý file: {str(e)}")
-            return jsonify({'error': f'Lỗi khi xử lý file: {str(e)}'}), 500
-    except Exception as e:
-        app.logger.error(f"Unexpected error in upload_participants: {str(e)}")
-        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+        os.remove(filepath)
+        return jsonify({
+            'message': 'Import thành công',
+            'total_processed': total_processed,
+            'added': added_count,
+            'updated': updated_count
+        }), 200
 
-    finally:
-        # Ensure the file is always removed, even if an error occurs
-        if 'filepath' in locals() and os.path.exists(filepath):
-            os.remove(filepath)
+    except Exception as e:
+        app.logger.error(f"Error during import: {str(e)}")
+        return jsonify({'error': f'Lỗi khi import: {str(e)}'}), 500
 
 def process_batch(batch):
-    for id, ho_ten, dia_chi in batch:
-        existing_participant = Participant.query.get(id)
+    for id, ho_ten, dia_chi, ma_vung in batch:
+        existing_participant = db.session.get(Participant, id)
         if existing_participant:
             existing_participant.ho_ten = ho_ten
             existing_participant.dia_chi = dia_chi
+            existing_participant.ma_vung = ma_vung
         else:
-            new_participant = Participant(id=id, ho_ten=ho_ten, dia_chi=dia_chi)
+            new_participant = Participant(id=id, ho_ten=ho_ten, dia_chi=dia_chi, ma_vung=ma_vung)
             db.session.add(new_participant)
     db.session.flush()
 
@@ -254,7 +248,8 @@ def get_participants():
         'participants': [{
             'id': participant.id,
             'ho_ten': participant.ho_ten,
-            'dia_chi': participant.dia_chi
+            'dia_chi': participant.dia_chi,
+            'ma_vung': participant.ma_vung
         } for participant in participants.items],
         'total': participants.total,
         'pages': participants.pages,
@@ -326,7 +321,8 @@ def get_results_live_view():
             'participant': {
                 'id': result.participant.id,
                 'ho_ten': result.participant.ho_ten,
-                'dia_chi': result.participant.dia_chi
+                'dia_chi': result.participant.dia_chi,
+                'ma_vung': result.participant.ma_vung
             },
             'award': {
                 'id': result.award.id,
